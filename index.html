@@ -123,7 +123,8 @@
       <button id="btnGif">导出 GIF</button>
       <button id="btnSaveIMG">下载图片</button>
     </div>
-    <div class="tip">拖进画面 / 点击选择 / <b>Ctrl+V</b> 粘贴都可以 · 点画面重播 · 循环播放「显影 → 还原」· GIF 与静态图都能下载</div>
+    <div class="tip">拖进画面 / 点击选择 / <b>Ctrl+V</b> 粘贴都可以 · 点画面重播 · 循环播放「显影 → 还原」<br>
+      手机上点「下载图片」会弹出系统面板，选「存储图像」直接进相册；电脑上则下载文件。</div>
   </section>
 
   <section class="page" id="pageMix">
@@ -164,6 +165,16 @@
 
 <button class="navbtn" id="navRight" title="进入介石混淆器">›</button>
 <button class="navbtn" id="navLeft" title="回到主页">‹</button>
+
+<div class="modal" id="saveModal" hidden>
+  <div class="card" role="dialog" aria-modal="true" aria-label="保存图片">
+    <img id="saveImg" alt="要保存的图片">
+    <div class="cap" id="saveCap">长按图片 → 存储到照片</div>
+    <button id="saveShare" class="primary" hidden>保存到相册 / 分享</button>
+    <button id="saveDownload" style="margin-top:8px">下载文件</button>
+    <button id="saveClose" style="margin-top:8px">关闭</button>
+  </div>
+</div>
 
 <div class="modal" id="tipModal" hidden>
   <div class="card" role="dialog" aria-modal="true" aria-label="微信赞赏码">
@@ -885,11 +896,8 @@ async function exportGif() {
   try {
     const { bytes } = await encodeGifBytes();
     const blob = new Blob([bytes], { type: 'image/gif' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = '介石显示器.gif';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 8000);
+    if (isMobile()) openSavePanel(blob, '介石显示器.gif');   // 手机上先预览，点按钮再存相册
+    else downloadBlob(blob, '介石显示器.gif');
     setMsg('GIF 已生成（' + (bytes.length / 1048576).toFixed(1) + ' MB）');
     await new Promise(r => setTimeout(r, 800));
     startShow();
@@ -1214,7 +1222,55 @@ window.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' && page === 1) goPage(0);
 });
 
-/* ---------- 下载静态图 ---------- */
+/* ---------- 保存图片：手机优先"存相册"（系统分享面板），桌面走文件 ---------- */
+let forceMobile = false, saveBlob = null, saveName = '';
+function isMobile() {
+  return forceMobile || /Android|iPhone|iPad|iPod|Windows Phone|Mobile/i.test(navigator.userAgent || '');
+}
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+function shareBlob(blob, name) {
+  try {
+    const file = new File([blob], name, { type: blob.type || 'image/png' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      return navigator.share({ files: [file], title: name }).then(() => true).catch(err => {
+        return err && err.name === 'AbortError';      // 用户自己取消，也算处理过了
+      });
+    }
+  } catch (e) { /* 不支持就走降级 */ }
+  return Promise.resolve(false);
+}
+function openSavePanel(blob, name) {
+  saveBlob = blob; saveName = name;
+  const img = $('#saveImg');
+  if (img.src) URL.revokeObjectURL(img.src);
+  img.src = URL.createObjectURL(blob);
+  const canShare = (() => {
+    try {
+      const f = new File([blob], name, { type: blob.type || 'image/png' });
+      return !!(navigator.canShare && navigator.canShare({ files: [f] }));
+    } catch (e) { return false; }
+  })();
+  $('#saveShare').hidden = !canShare;
+  $('#saveCap').textContent = isMobile()
+    ? '长按上面的图片 → 选「存储到照片」就能直接进相册'
+    : '右键图片 →「图片存储为…」，或点下面的按钮';
+  $('#saveModal').hidden = false;
+}
+async function saveImage(blob, name) {
+  if (isMobile()) {
+    if (await shareBlob(blob, name)) return;           // 系统面板 →「存储图像」进相册
+    openSavePanel(blob, name);                          // 不支持分享：长按提示
+    return;
+  }
+  downloadBlob(blob, name);                             // 桌面：下载文件
+}
+
 function saveResultPNG() {
   if (!S.frames.length) return;
   const last = S.frames[S.frames.length - 1];
@@ -1228,12 +1284,7 @@ function saveResultPNG() {
   const out = makeCanvas(side * 4, side * 4), g = out.getContext('2d');
   g.imageSmoothingEnabled = false;
   g.drawImage(src, 0, 0, side * 4, side * 4);
-  out.toBlob(b => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(b); a.download = '介石显示器.png';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 6000);
-  }, 'image/png');
+  out.toBlob(b => { saveImage(b, '介石显示器.png'); }, 'image/png');
 }
 
 /* ---------- 介石混淆器界面 ---------- */
@@ -1313,23 +1364,21 @@ $('#mixPick').onclick = e => { e.stopPropagation(); mixPickFile('hide'); };
 $('#unmixPick').onclick = e => { e.stopPropagation(); mixPickFile('reveal'); };
 $('#mixSave').onclick = () => {
   if (!mixState.hide) return;
-  mixState.hide.canvas.toBlob(b => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(b); a.download = '介石混淆图.png';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 6000);
-  }, 'image/png');
+  mixState.hide.canvas.toBlob(b => { saveImage(b, '介石混淆图.png'); }, 'image/png');
 };
 $('#unmixSave').onclick = () => {
   if (!mixState.reveal) return;
-  mixState.reveal.canvas.toBlob(b => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(b); a.download = '还原图.png';
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 6000);
-  }, 'image/png');
+  mixState.reveal.canvas.toBlob(b => { saveImage(b, '还原图.png'); }, 'image/png');
 };
 $('#btnSaveIMG').onclick = e => { e.stopPropagation(); saveResultPNG(); };
+/* 保存面板事件 */
+$('#saveClose').onclick = () => { $('#saveModal').hidden = true; };
+$('#saveModal').addEventListener('click', e => { if (e.target === $('#saveModal')) $('#saveModal').hidden = true; });
+$('#saveDownload').onclick = () => { if (saveBlob) downloadBlob(saveBlob, saveName); };
+$('#saveShare').onclick = async () => { if (saveBlob) await shareBlob(saveBlob, saveName); };
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('#saveModal').hidden) $('#saveModal').hidden = true;
+});
 
 /* ---------------- 启动 ---------------- */
 (async function boot() {
@@ -1357,6 +1406,10 @@ window.__obamify = {
   exportGif: () => exportGif(),
   encodeGifBytes: () => encodeGifBytes(),        // 自动化验证用：返回编码后的 GIF 字节
   showState: () => ({ playing: S.playing, segs: show ? show.segs.length : 0, total: show ? Math.round(show.total) : 0, exporting }),
+  /* 保存相关（自动化测试用） */
+  isMobile: () => isMobile(),
+  setMobile: v => { forceMobile = !!v; },
+  saveStill: () => saveResultPNG(),
   /* 文档/调试：把某一帧或"恒等原图"渲染到屏幕，便于导出中间状态 */
   renderFrame(i) {
     const f = S.frames[i]; if (!f) return false;
