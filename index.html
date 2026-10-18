@@ -999,7 +999,7 @@ $('#btnGif').onclick = e => { e.stopPropagation(); exportGif(); };
 $('#screen').addEventListener('click', () => { if (S.frames.length && !C.computing && !exporting) startShow(); });
 window.addEventListener('keydown', e => {
   if (e.code === 'Space' && !tipModal.hidden) return;
-  if (e.code === 'Space' && S.frames.length && !C.computing && !exporting) { e.preventDefault(); startShow(); }
+  if (e.code === 'Space' && page === 0 && S.frames.length && !C.computing && !exporting) { e.preventDefault(); startShow(); }
 });
 
 /* 打赏：点击顶部那行字弹出微信赞赏码 */
@@ -1027,7 +1027,11 @@ document.addEventListener('drop', e => {
 });
 window.addEventListener('paste', e => {
   const items = e.clipboardData && e.clipboardData.items; if (!items) return;
-  for (const it of items) if (it.type && it.type.startsWith('image/')) { readFile(it.getAsFile()); break; }
+  for (const it of items) if (it.type && it.type.startsWith('image/')) {
+    if (page === 1) mixReadFile(it.getAsFile(), 'hide');                 // 在介石混淆器页 → 送去混淆
+    else readFile(it.getAsFile());                                       // 在主界面 → 正常的显影流程
+    break;
+  }
 });
 
 /* ================================================================
@@ -1241,19 +1245,19 @@ function showCanvas(canvas, src) {
   canvas.getContext('2d').drawImage(src, 0, 0);
   canvas.style.display = 'block';
 }
-let mixSide = 'hide';
-function mixReadFile(file) {
+let mixSide = null;
+function mixReadFile(file, side) {
   const r = new FileReader();
   r.onload = () => {
     const im = new Image();
-    im.onload = () => { mixAfterLoad(im); };
+    im.onload = () => { mixAfterLoad(im, side); };
     im.onerror = () => { mixInfo.innerHTML = '<span class="warn">这张图读不了，换一张试试</span>'; };
     im.src = r.result;
   };
   r.readAsDataURL(file);
 }
-function mixAfterLoad(img) {
-  if (mixSide === 'hide') {
+function mixAfterLoad(img, side) {
+  if (side === 'hide') {
     const res = mxMemeHide(img);
     if (res.error) { mixInfo.innerHTML = '<span class="warn">' + res.error + '</span>'; return; }
     const cv = mxToCanvas(res.data, res.w, res.h);
@@ -1274,32 +1278,33 @@ function mixAfterLoad(img) {
     $('#unmixSave').disabled = false;
     unmixInfo.innerHTML = `解码完成：<b>${res.w}×${res.h}</b>，块校验通过率 <b>${(res.okRatio * 100).toFixed(0)}%</b>。`;
   }
-  mixSide = 'hide';
 }
+/* 混淆器用自己独立的文件输入框 —— 绝不覆盖主界面的 fileInput，
+   否则主界面「选一张照片」也会被送进混淆器（这就是之前的 bug）。 */
+const mixFileInput = document.createElement('input');
+mixFileInput.type = 'file'; mixFileInput.accept = 'image/*'; mixFileInput.style.display = 'none';
+document.body.appendChild(mixFileInput);
+mixFileInput.onchange = () => {
+  const f = mixFileInput.files && mixFileInput.files[0];
+  const side = mixSide || 'hide';        // 没指定就默认走"隐藏"
+  mixSide = null;
+  if (f) mixReadFile(f, side);
+  mixFileInput.value = '';
+};
 function mixPickFile(sideName) {
   mixSide = sideName;
-  fileInput.click();
+  mixFileInput.click();
 }
-/* 复用主界面的 fileInput：加一层分流 */
-const _origOnChange = fileInput.onchange;
-fileInput.onchange = () => {
-  const f = fileInput.files && fileInput.files[0];
-  if (f) {
-    if (mixSide === 'hide' || mixSide === 'reveal') mixReadFile(f);
-    else if (_origOnChange) _origOnChange();
-  }
-  fileInput.value = '';
-  mixSide = 'hide';
-};
 function bindMixDrop(sel, sideName) {
   const el = $(sel);
   el.addEventListener('click', () => { if (swiped) return; mixPickFile(sideName); });
   el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('hot'); });
   el.addEventListener('dragleave', () => el.classList.remove('hot'));
   el.addEventListener('drop', e => {
-    e.preventDefault(); el.classList.remove('hot');
+    e.preventDefault(); e.stopPropagation();          // 只交给混淆器，不再冒泡给主界面
+    el.classList.remove('hot');
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) { mixSide = sideName; mixReadFile(f); }
+    if (f) mixReadFile(f, sideName);
   });
 }
 bindMixDrop('#mixDrop', 'hide');
